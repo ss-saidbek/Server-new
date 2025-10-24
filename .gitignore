@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.db
+*.sqlite3
+config.py
+.env
+*.key
+*.log
+bot.log
