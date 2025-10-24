@@ -1,4 +1,28 @@
+# Virtual environment
 venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database fayllari
+*.db
+*.sqlite3
+*.sql
+
+# Tokenlar va maxfiy ma'lumotlar
+config.py
+.env
+*.key
+secrets.py
+
+# Log fayllari
+*.log
+logs/
+
+# OS fayllari
+.DS_Store
+Thumbs.dbvenv/
 __pycache__/
 *.db
 *.sqlite3
