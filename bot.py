@@ -99,9 +99,10 @@ def update_admin_password(new_password, edited_by_user_id):
         
         # Avvalgi parolni olish (oxirgi parol)
         cur.execute("SELECT admin_password FROM admin_settings ORDER BY id DESC LIMIT 1")
-        old_password = cur.fetchone()[0]
+        result = cur.fetchone()
+        old_password = result[0] if result else 'Birinchiparol'
         
-        # YANGI QATOR QO'SHISH
+        # YANGI QATOR QO'SHISH (faqat bir marta)
         cur.execute('''
             INSERT INTO admin_settings (admin_password, edit_by, old_password)
             VALUES (%s, %s, %s)
@@ -285,9 +286,8 @@ def handle_callback(call):
     elif call.data.startswith("cancel_delete_"):
         bot.send_message(call.message.chat.id, "❌ O'chirish bekor qilindi")
 
-    elif call.data == "confirm_password_change":
-        # Yangi parolni olish
-        new_password = call.message.text.split("\n")[-1].replace("Yangi parol: ", "")
+    elif call.data.startswith("confirm_password_"):
+        new_password = call.data.replace("confirm_password_", "")
         user_id = call.from_user.id
         
         if update_admin_password(new_password, user_id):
@@ -524,7 +524,7 @@ def process_new_password(message):
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
-        InlineKeyboardButton("✅ Ha", callback_data="confirm_password_change"),
+        InlineKeyboardButton("✅ Ha", callback_data=f"confirm_password_{new_password}"),
         InlineKeyboardButton("❌ Yo'q", callback_data="cancel_password_change")
     )
     bot.send_message(
@@ -532,8 +532,6 @@ def process_new_password(message):
         f"🔐 Parolni o'zgartirishni tasdiqlaysizmi?\n\nYangi parol: {new_password}",
         reply_markup=keyboard
     )
-    # Yangi parolni saqlash
-    bot.register_next_step_handler(message, lambda msg: update_admin_password(new_password, user_id))
 
 # Database ni ishga tushirish
 init_db()
