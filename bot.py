@@ -1,7 +1,14 @@
 import psycopg2
 import telebot
+import json
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
+import pandas as pd
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+import io
 
 # Admin sessiyalari
 admin_sessions = {}
@@ -114,6 +121,77 @@ def update_admin_password(new_password, edited_by_user_id):
         return True
     return False
 
+# PDF fayl yaratish
+def create_movies_pdf():
+    conn = create_connection()
+    if not conn:
+        return None
+        
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT movie_id, caption, view_count, added_at 
+            FROM movies 
+            WHERE status = 'active' 
+            ORDER BY movie_id
+        """)
+        movies = cur.fetchall()
+        cur.close()
+        
+        if not movies:
+            return None
+        
+        # PDF yaratish
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        
+        # Sarlavha
+        styles = getSampleStyleSheet()
+        title = Paragraph("🎬 Kinolar Ro'yxati", styles['Title'])
+        elements.append(title)
+        
+        # Jadval ma'lumotlari
+        data = [['ID', 'Sarlavha', 'Koʻrilgan', 'Qoʻshilgan sana']]
+        
+        for movie_id, caption, view_count, added_at in movies:
+            # Sarlavhani qisqartirish (agar uzun bo'lsa)
+            short_caption = caption[:50] + "..." if len(caption) > 50 else caption
+            added_date = added_at.strftime("%Y-%m-%d %H:%M")
+            data.append([str(movie_id), short_caption, str(view_count), added_date])
+        
+        # Jadval yaratish
+        table = Table(data, colWidths=[50, 200, 70, 120])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ]))
+        
+        elements.append(table)
+        
+        # Statistik ma'lumotlar
+        stats_text = f"\n\nJami kinolar: {len(movies)} ta\nJami ko'rishlar: {sum(movie[2] for movie in movies)} marta"
+        stats_paragraph = Paragraph(stats_text, styles['Normal'])
+        elements.append(stats_paragraph)
+        
+        # PDF ni yaratish
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+        
+    except Exception as e:
+        print(f"PDF yaratish xatosi: {e}")
+        return None
+    finally:
+        conn.close()
+
 # /start komandasi
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -208,6 +286,7 @@ def show_admin_panel(message):
     keyboard.add(InlineKeyboardButton("📊 Statistika", callback_data="show_stats"))
     keyboard.add(InlineKeyboardButton("🔐 Admin kodini o'zgartirish", callback_data="change_password"))
     keyboard.add(InlineKeyboardButton("📝 Parol tarixi", callback_data="password_history"))
+    keyboard.add(InlineKeyboardButton("📄 PDF yaratish", callback_data="generate_pdf"))
     
     panel_text = f"""
 👨‍💻 Admin panel:
@@ -279,6 +358,9 @@ def handle_callback(call):
     elif call.data == "password_history":
         show_password_history(call.message)
     
+    elif call.data == "generate_pdf":
+        generate_pdf_file(call.message)
+    
     elif call.data.startswith("confirm_delete_"):
         movie_id = int(call.data.split("_")[2])
         delete_movie_confirmed(call.message, movie_id)
@@ -313,6 +395,22 @@ def handle_callback(call):
     
     elif call.data == "cancel_password_change":
         bot.send_message(call.message.chat.id, "❌ Parol o'zgartirish bekor qilindi")
+
+def generate_pdf_file(message):
+    bot.send_message(message.chat.id, "📄 PDF fayl yaratilmoqda...")
+    
+    pdf_buffer = create_movies_pdf()
+    
+    if pdf_buffer:
+        # PDF faylni yuborish
+        pdf_buffer.name = "kinolar_royxati.pdf"
+        bot.send_document(
+            message.chat.id,
+            pdf_buffer,
+            caption="🎬 **Barcha kinolar ro'yxati**\n\nPDF formatida tayyor!"
+        )
+    else:
+        bot.send_message(message.chat.id, "❌ Kinolar topilmadi yoki PDF yaratishda xatolik!")
 
 def process_movie_addition(message):
     if message.video:
