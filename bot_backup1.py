@@ -46,8 +46,6 @@ def init_db():
                 file_id TEXT NOT NULL,
                 caption TEXT,
                 added_by BIGINT,
-                status VARCHAR(20) DEFAULT 'active',
-                view_count INTEGER DEFAULT 0,
                 added_at TIMESTAMP DEFAULT NOW()
             )
         ''')
@@ -173,7 +171,6 @@ def show_admin_panel(message):
     keyboard.add(InlineKeyboardButton("🎬 Kino qo'shish", callback_data="add_movie"))
     keyboard.add(InlineKeyboardButton("🗑️ Kino o'chirish", callback_data="delete_movie"))
     keyboard.add(InlineKeyboardButton("📋 Barcha kinolar", callback_data="list_movies"))
-    keyboard.add(InlineKeyboardButton("📊 Statistika", callback_data="show_stats"))
     keyboard.add(InlineKeyboardButton("🔐 Admin kodini o'zgartirish", callback_data="change_password"))
     
     panel_text = """
@@ -197,22 +194,15 @@ def send_movie_by_id(message):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT file_id, caption, view_count FROM movies WHERE movie_id = %s AND status = 'active'", (movie_id,))
+            cur.execute("SELECT file_id, caption FROM movies WHERE movie_id = %s", (movie_id,))
             result = cur.fetchone()
+            cur.close()
             
             if result:
-                file_id, caption, current_count = result
-                
-                # View_count ni yangilash
-                new_count = current_count + 1
-                cur.execute("UPDATE movies SET view_count = %s WHERE movie_id = %s", (new_count, movie_id))
-                conn.commit()
-                
-                bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}\n👀 Ko'rilganlar: {new_count}")
+                file_id, caption = result
+                bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}")
             else:
-                bot.reply_to(message, "❌ Bu kodli kino topilmadi yoki o'chirilgan")
-                
-            cur.close()
+                bot.reply_to(message, "❌ Bu kodli kino topilmadi")
                 
         except Exception as e:
             print(f"Kino yuborish xatosi: {e}")
@@ -233,9 +223,6 @@ def handle_callback(call):
     
     elif call.data == "list_movies":
         show_all_movies(call.message)
-    
-    elif call.data == "show_stats":
-        show_stats(call.message)
     
     elif call.data == "change_password":
         bot.send_message(call.message.chat.id, "🔐 Eski parolni kiriting:")
@@ -286,8 +273,8 @@ def process_movie_addition(message):
                         else:
                             # Yangi kino qo'shish
                             cur.execute('''
-                                INSERT INTO movies (movie_id, file_id, caption, added_by, status, view_count)
-                                VALUES (%s, %s, %s, %s, 'active', 0)
+                                INSERT INTO movies (movie_id, file_id, caption, added_by)
+                                VALUES (%s, %s, %s, %s)
                             ''', (movie_id, file_id, movie_caption, message.from_user.id))
                             conn.commit()
                             cur.close()
@@ -315,14 +302,14 @@ def process_movie_deletion(message):
         if conn:
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT file_id, caption, view_count FROM movies WHERE movie_id = %s AND status = 'active'", (movie_id,))
+                cur.execute("SELECT file_id, caption FROM movies WHERE movie_id = %s", (movie_id,))
                 result = cur.fetchone()
                 cur.close()
                 
                 if result:
-                    file_id, caption, view_count = result
+                    file_id, caption = result
                     # VIDEO NI HAM YUBORISH
-                    bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}\n👀 Ko'rilganlar: {view_count}")
+                    bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}")
                     
                     keyboard = InlineKeyboardMarkup()
                     keyboard.add(
@@ -331,11 +318,11 @@ def process_movie_deletion(message):
                     )
                     bot.send_message(
                         message.chat.id,
-                        f"🗑️ Ushbu kino o'chirishni tasdiqlaysizmi?\n\nID: {movie_id}\nSarlavha: {caption}\n👀 Ko'rilganlar: {view_count}",
+                        f"🗑️ Ushbu kino o'chirishni tasdiqlaysizmi?\n\nID: {movie_id}\nSarlavha: {caption}",
                         reply_markup=keyboard
                     )
                 else:
-                    bot.send_message(message.chat.id, "❌ Bu ID li kino topilmadi yoki allaqachon o'chirilgan")
+                    bot.send_message(message.chat.id, "❌ Bu ID li kino topilmadi")
                     
             except Exception as e:
                 print(f"Kino o'chirish xatosi: {e}")
@@ -350,11 +337,10 @@ def delete_movie_confirmed(message, movie_id):
     if conn:
         try:
             cur = conn.cursor()
-            # O'chirish o'rniga status ni 'deleted' qilish
-            cur.execute("UPDATE movies SET status = 'deleted' WHERE movie_id = %s", (movie_id,))
+            cur.execute("DELETE FROM movies WHERE movie_id = %s", (movie_id,))
             conn.commit()
             cur.close()
-            bot.send_message(message.chat.id, f"✅ {movie_id} ID li kino o'chirildi (arxivlandi)")
+            bot.send_message(message.chat.id, f"✅ {movie_id} ID li kino o'chirildi")
         except Exception as e:
             print(f"Kino o'chirish xatosi: {e}")
             bot.send_message(message.chat.id, "❌ Kino o'chirishda xatolik")
@@ -366,14 +352,14 @@ def show_all_movies(message):
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT movie_id, caption, view_count FROM movies WHERE status = 'active' ORDER BY movie_id")
+            cur.execute("SELECT movie_id, caption FROM movies ORDER BY movie_id")
             movies = cur.fetchall()
             cur.close()
             
             if movies:
                 # Har bir kino uchun alohida xabar
-                for movie_id, caption, view_count in movies:
-                    movie_text = f"🎬 **Kino kodi:** {movie_id}\n📝 **Sarlavha:** {caption}\n👀 **Ko'rilganlar:** {view_count}"
+                for movie_id, caption in movies:
+                    movie_text = f"🎬 **Kino kodi:** {movie_id}\n📝 **Sarlavha:** {caption}"
                     bot.send_message(message.chat.id, movie_text)
             else:
                 bot.send_message(message.chat.id, "📭 Hozircha kinolar mavjud emas")
@@ -381,48 +367,6 @@ def show_all_movies(message):
         except Exception as e:
             print(f"Kinolar ro'yxati xatosi: {e}")
             bot.send_message(message.chat.id, "❌ Xatolik yuz berdi")
-        finally:
-            conn.close()
-
-def show_stats(message):
-    conn = create_connection()
-    if conn:
-        try:
-            cur = conn.cursor()
-            
-            # Umumiy statistika
-            cur.execute("SELECT COUNT(*) FROM movies WHERE status = 'active'")
-            total_movies = cur.fetchone()[0]
-            
-            cur.execute("SELECT COUNT(*) FROM movies WHERE status = 'deleted'")
-            deleted_movies = cur.fetchone()[0]
-            
-            cur.execute("SELECT SUM(view_count) FROM movies")
-            total_views = cur.fetchone()[0] or 0
-            
-            # Eng ko'p ko'rilgan kinolar
-            cur.execute("SELECT movie_id, caption, view_count FROM movies WHERE status = 'active' ORDER BY view_count DESC LIMIT 5")
-            top_movies = cur.fetchall()
-            
-            cur.close()
-            
-            stats_text = f"""
-📊 **Bot Statistikasi:**
-
-🎬 **Jami kinolar:** {total_movies}
-🗑️ **O'chirilgan kinolar:** {deleted_movies}
-👀 **Jami ko'rishlar:** {total_views}
-
-🏆 **Eng ko'p ko'rilgan kinolar:**
-"""
-            for i, (movie_id, caption, views) in enumerate(top_movies, 1):
-                stats_text += f"{i}. {movie_id} - {caption} ({views} marta)\n"
-            
-            bot.send_message(message.chat.id, stats_text)
-            
-        except Exception as e:
-            print(f"Statistika xatosi: {e}")
-            bot.send_message(message.chat.id, "❌ Statistika olishda xatolik")
         finally:
             conn.close()
 
