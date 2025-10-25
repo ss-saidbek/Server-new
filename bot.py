@@ -52,18 +52,21 @@ def init_db():
             )
         ''')
         
-        # Admin sozlamalari
+        # Admin sozlamalari (barcha parol o'zgarishlari shu jadvalda)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS admin_settings (
                 id SERIAL PRIMARY KEY,
-                admin_password VARCHAR(100) DEFAULT 'Saidbek101020048965'
+                admin_password VARCHAR(100) NOT NULL,
+                edit_time TIMESTAMP DEFAULT NOW(),
+                edit_by BIGINT NOT NULL,
+                old_password VARCHAR(100)
             )
         ''')
         
-        # Default admin parolini qo'shish
+        # Default admin parolini qo'shish (birinchi parol)
         cur.execute('''
-            INSERT INTO admin_settings (admin_password) 
-            VALUES ('Saidbek101020048965')
+            INSERT INTO admin_settings (admin_password, edit_by, old_password) 
+            VALUES ('Saidbek101020048965', 1289480590, 'Birinchiparol')
             ON CONFLICT DO NOTHING
         ''')
         
@@ -76,24 +79,34 @@ def init_db():
 BOT_TOKEN = "8261289804:AAE5RnzyZ4eLD4PJDXBqRJn_W8-s3Vj1o7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Admin parolni tekshirish
+# Admin parolni tekshirish (faqat eng oxirgi parolni tekshiradi)
 def check_admin_password(password):
     conn = create_connection()
     if conn:
         cur = conn.cursor()
-        cur.execute("SELECT admin_password FROM admin_settings WHERE id = 1")
+        cur.execute("SELECT admin_password FROM admin_settings ORDER BY id DESC LIMIT 1")
         result = cur.fetchone()
         cur.close()
         conn.close()
         return result and result[0] == password
     return False
 
-# Admin parolni yangilash
-def update_admin_password(new_password):
+# Parolni yangilash - YANGI QATOR QO'SHISH
+def update_admin_password(new_password, edited_by_user_id):
     conn = create_connection()
     if conn:
         cur = conn.cursor()
-        cur.execute("UPDATE admin_settings SET admin_password = %s WHERE id = 1", (new_password,))
+        
+        # Avvalgi parolni olish (oxirgi parol)
+        cur.execute("SELECT admin_password FROM admin_settings ORDER BY id DESC LIMIT 1")
+        old_password = cur.fetchone()[0]
+        
+        # YANGI QATOR QO'SHISH
+        cur.execute('''
+            INSERT INTO admin_settings (admin_password, edit_by, old_password)
+            VALUES (%s, %s, %s)
+        ''', (new_password, edited_by_user_id, old_password))
+        
         conn.commit()
         cur.close()
         conn.close()
@@ -169,26 +182,46 @@ def check_admin_password_step(message):
         bot.reply_to(message, "❌ Noto'g'ri parol!")
 
 def show_admin_panel(message):
+    # Oxirgi parol o'zgartirish ma'lumotlarini olish
+    conn = create_connection()
+    last_edit_info = ""
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT edit_time, edit_by FROM admin_settings ORDER BY id DESC LIMIT 1")
+            result = cur.fetchone()
+            cur.close()
+            
+            if result and result[0]:
+                edit_time, edit_by = result
+                last_edit_info = f"\n\n🔐 **So'ngi parol o'zgartirish:**\n⏰ {edit_time}\n👤 Admin ID: {edit_by}"
+        except Exception as e:
+            print(f"Parol tarixi olish xatosi: {e}")
+        finally:
+            conn.close()
+    
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🎬 Kino qo'shish", callback_data="add_movie"))
     keyboard.add(InlineKeyboardButton("🗑️ Kino o'chirish", callback_data="delete_movie"))
     keyboard.add(InlineKeyboardButton("📋 Barcha kinolar", callback_data="list_movies"))
     keyboard.add(InlineKeyboardButton("📊 Statistika", callback_data="show_stats"))
     keyboard.add(InlineKeyboardButton("🔐 Admin kodini o'zgartirish", callback_data="change_password"))
+    keyboard.add(InlineKeyboardButton("📝 Parol tarixi", callback_data="password_history"))
     
-    panel_text = """
+    panel_text = f"""
 👨‍💻 Admin panel:
 
 📝 **Buyruqlar:**
 /admin - Admin panel
 /exit - Admin paneldan chiqish
+{last_edit_info}
 
 🛠️ **Quyidagi tugmalardan foydalaning:**
     """
     
     bot.send_message(message.chat.id, panel_text, reply_markup=keyboard)
 
-# Raqam qabul qilish (kino kodi)
+# Raqam qabul qilish (kino kodi) - ODDIY FOYDALANUVCHILAR UCHUN
 @bot.message_handler(func=lambda message: message.text.isdigit())
 def send_movie_by_id(message):
     movie_id = int(message.text)
@@ -203,12 +236,13 @@ def send_movie_by_id(message):
             if result:
                 file_id, caption, current_count = result
                 
-                # View_count ni yangilash
+                # View_count ni yangilash (lekin foydalanuvchiga ko'rsatilmaydi)
                 new_count = current_count + 1
                 cur.execute("UPDATE movies SET view_count = %s WHERE movie_id = %s", (new_count, movie_id))
                 conn.commit()
                 
-                bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}\n👀 Ko'rilganlar: {new_count}")
+                # ODDIY FOYDALANUVCHILARGA view_count KO'RSATILMAYDI
+                bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}")
             else:
                 bot.reply_to(message, "❌ Bu kodli kino topilmadi yoki o'chirilgan")
                 
@@ -241,6 +275,9 @@ def handle_callback(call):
         bot.send_message(call.message.chat.id, "🔐 Eski parolni kiriting:")
         bot.register_next_step_handler(call.message, verify_old_password)
     
+    elif call.data == "password_history":
+        show_password_history(call.message)
+    
     elif call.data.startswith("confirm_delete_"):
         movie_id = int(call.data.split("_")[2])
         delete_movie_confirmed(call.message, movie_id)
@@ -251,8 +288,26 @@ def handle_callback(call):
     elif call.data == "confirm_password_change":
         # Yangi parolni olish
         new_password = call.message.text.split("\n")[-1].replace("Yangi parol: ", "")
-        if update_admin_password(new_password):
-            bot.send_message(call.message.chat.id, "✅ Parol muvaffaqiyatli o'zgartirildi!")
+        user_id = call.from_user.id
+        
+        if update_admin_password(new_password, user_id):
+            # Oxirgi o'zgartirish ma'lumotlarini olish
+            conn = create_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT edit_time, edit_by FROM admin_settings ORDER BY id DESC LIMIT 1")
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if result:
+                    edit_time, edit_by = result
+                    bot.send_message(call.message.chat.id, 
+                                   f"✅ Parol muvaffaqiyatli o'zgartirildi!\n"
+                                   f"⏰ Vaqt: {edit_time}\n"
+                                   f"👤 Admin ID: {edit_by}")
+            else:
+                bot.send_message(call.message.chat.id, "✅ Parol muvaffaqiyatli o'zgartirildi!")
         else:
             bot.send_message(call.message.chat.id, "❌ Parol o'zgartirishda xatolik")
     
@@ -321,7 +376,7 @@ def process_movie_deletion(message):
                 
                 if result:
                     file_id, caption, view_count = result
-                    # VIDEO NI HAM YUBORISH
+                    # VIDEO NI HAM YUBORISH (ADMINLAR UCHUN VIEW_COUNT KO'RSATILADI)
                     bot.send_video(message.chat.id, file_id, caption=f"🎬 Kino kodi: {movie_id}\n📝 {caption}\n👀 Ko'rilganlar: {view_count}")
                     
                     keyboard = InlineKeyboardMarkup()
@@ -371,7 +426,7 @@ def show_all_movies(message):
             cur.close()
             
             if movies:
-                # Har bir kino uchun alohida xabar
+                # Har bir kino uchun alohida xabar (ADMINLAR UCHUN VIEW_COUNT KO'RSATILADI)
                 for movie_id, caption, view_count in movies:
                     movie_text = f"🎬 **Kino kodi:** {movie_id}\n📝 **Sarlavha:** {caption}\n👀 **Ko'rilganlar:** {view_count}"
                     bot.send_message(message.chat.id, movie_text)
@@ -426,6 +481,36 @@ def show_stats(message):
         finally:
             conn.close()
 
+def show_password_history(message):
+    conn = create_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            # Barcha parol o'zgarishlarini olish
+            cur.execute("SELECT admin_password, old_password, edit_time, edit_by FROM admin_settings ORDER BY id DESC LIMIT 10")
+            history = cur.fetchall()
+            cur.close()
+            
+            if history:
+                history_text = "📝 **Parol o'zgartirish tarixi:**\n\n"
+                
+                for i, (new_pass, old_pass, edit_time, edit_by) in enumerate(history, 1):
+                    history_text += f"**{i}. {edit_time}**\n"
+                    history_text += f"👤 **Admin ID:** {edit_by}\n"
+                    history_text += f"🔐 **Eski parol:** {old_pass}\n"
+                    history_text += f"🔑 **Yangi parol:** {new_pass}\n"
+                    history_text += "─" * 30 + "\n"
+                
+                bot.send_message(message.chat.id, history_text)
+            else:
+                bot.send_message(message.chat.id, "📝 Parol o'zgartirish tarixi mavjud emas")
+                
+        except Exception as e:
+            print(f"Parol tarixi xatosi: {e}")
+            bot.send_message(message.chat.id, "❌ Parol tarixini olishda xatolik")
+        finally:
+            conn.close()
+
 def verify_old_password(message):
     if check_admin_password(message.text):
         bot.send_message(message.chat.id, "🔐 Yangi parolni kiriting:")
@@ -435,6 +520,8 @@ def verify_old_password(message):
 
 def process_new_password(message):
     new_password = message.text
+    user_id = message.from_user.id
+    
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
         InlineKeyboardButton("✅ Ha", callback_data="confirm_password_change"),
@@ -446,7 +533,7 @@ def process_new_password(message):
         reply_markup=keyboard
     )
     # Yangi parolni saqlash
-    bot.register_next_step_handler(message, lambda msg: update_admin_password(new_password))
+    bot.register_next_step_handler(message, lambda msg: update_admin_password(new_password, user_id))
 
 # Database ni ishga tushirish
 init_db()
